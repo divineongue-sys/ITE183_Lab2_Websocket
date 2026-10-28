@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cat Cafe BSL Room</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #fdf1e3; color: #5a3e2b; max-width: 720px; margin: 20px auto; padding: 0 16px; text-align: center; }
+    h1 { margin: 6px 0; }
+    #status { font-weight: bold; padding: 8px; border-radius: 6px; background: #f0f0f0; margin-bottom: 10px; }
+    #status.ok { background: #d4edda; color: #155724; }
+    #status.bad { background: #f8d7da; color: #721c24; }
+    #rooms { margin-bottom: 10px; }
+    .roomBtn { padding: 8px 18px; margin: 0 4px; border: none; border-radius: 8px; font-weight: bold; color: #fff; cursor: pointer; background: #c9a27e; }
+    .roomBtn.active { background: #e07a2f; }
+    #stage { position: relative; height: 260px; border: 4px solid #fff; border-radius: 12px; overflow: hidden; }
+    #stage.living { background: linear-gradient(#ffe8c7 70%, #c98f5a 70%); }
+    #stage.garden { background: linear-gradient(#bfe8ff 55%, #7ccf6b 55%); }
+    #roomTitle { position: absolute; top: 8px; left: 0; right: 0; font-weight: bold; font-size: 20px; color: #fff; text-shadow: 1px 1px 3px rgba(0,0,0,.4); }
+    .cat { position: absolute; bottom: 16px; width: 90px; margin-left: -45px; text-align: center; transition: left .3s; }
+    .cat .face { font-size: 48px; line-height: 1; }
+    .cat .name { font-size: 12px; font-weight: bold; background: rgba(255,255,255,.75); border-radius: 4px; padding: 1px 4px; display: inline-block; }
+    .cat .bubble { position: absolute; bottom: 82px; left: 50%; transform: translateX(-50%); background: #fff; border-radius: 10px; padding: 4px 8px; font-size: 13px; max-width: 150px; word-wrap: break-word; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+    .cat .bubble:empty { display: none; }
+    #controls { display: flex; gap: 8px; margin: 12px 0; }
+    #nick { width: 110px; padding: 8px; }
+    #msgInput { flex-grow: 1; padding: 8px; }
+    button#sendBtn { padding: 8px 16px; cursor: pointer; background: #e07a2f; color: #fff; border: none; border-radius: 6px; font-weight: bold; }
+    button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
+    #log { text-align: left; border: 1px solid #d9b99b; background: #fffaf3; height: 180px; overflow-y: auto; padding: 10px; font-family: monospace; border-radius: 8px; }
+    .sent { color: #0066cc; } .received { color: #008800; } .system { color: #888; font-style: italic; }
+  </style>
+</head>
+<body>
+  <h1>🐾 Cat Cafe BSL Room 🐾</h1>
+  <div id="status">Status: Connecting...</div>
+
+  <div id="rooms">
+    Current Room:
+    <button class="roomBtn active" id="btn-living">Living Room</button>
+    <button class="roomBtn" id="btn-garden">Garden</button>
+  </div>
+
+  <div id="stage" class="living">
+    <div id="roomTitle">LIVING ROOM</div>
+  </div>
+
+  <div id="controls">
+    <input type="text" id="nick" maxlength="12" placeholder="Cat name" disabled />
+    <input type="text" id="msgInput" placeholder="Meow something..." disabled />
+    <button id="sendBtn" disabled>Send</button>
+  </div>
+
+  <div id="log"></div>
+
+  <script>
+    // Works on localhost and on forwarded URLs (e.g. GitHub Codespaces)
+    const proto = location.protocol === "https:" ? "wss://" : "ws://";
+    const wsUrl = location.host ? proto + location.host : "ws://localhost:8000";
+    const socket = new WebSocket(wsUrl);
+
+    const ROOMS = { living: "Living Room", garden: "Garden" };
+    const FACES = ["🐱", "😺", "😸", "😻", "🐈", "🐈‍⬛", "😼", "😽"];
+
+    const statusDiv = document.getElementById("status");
+    const logDiv = document.getElementById("log");
+    const stage = document.getElementById("stage");
+    const roomTitle = document.getElementById("roomTitle");
+    const nickInput = document.getElementById("nick");
+    const msgInput = document.getElementById("msgInput");
+    const sendBtn = document.getElementById("sendBtn");
+
+    let currentRoom = "living";
+    const history = { living: [], garden: [] };   // chat log per room
+    const cats = { living: {}, garden: {} };      // cats per room, keyed by client id
+    nickInput.value = "Cat" + Math.floor(Math.random() * 900 + 100);
+
+    function sanitize(s) { return s.replace(/\|/g, "/"); }   // "|" is our field separator
+
+    function renderLog() {
+      logDiv.innerHTML = "";
+      history[currentRoom].forEach(function (h) {
+        const d = document.createElement("div");
+        d.className = h.cls;
+        d.textContent = h.text;
+        logDiv.appendChild(d);
+      });
+      logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    function addLog(room, text, cls) {
+      history[room].push({ text: text, cls: cls });
+      if (room === currentRoom) renderLog();
+    }
+
+    function renderStage() {
+      stage.querySelectorAll(".cat").forEach(function (el) { el.remove(); });
+      const ids = Object.keys(cats[currentRoom]);
+      ids.forEach(function (id, i) {
+        const c = cats[currentRoom][id];
+        const el = document.createElement("div");
+        el.className = "cat";
+        el.style.left = ((i + 1) * 100 / (ids.length + 1)) + "%";
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+        bubble.textContent = c.bubble || "";
+        const face = document.createElement("div");
+        face.className = "face";
+        face.textContent = c.face;
+        const name = document.createElement("div");
+        name.className = "name";
+        name.textContent = c.nick;
+        el.appendChild(bubble); el.appendChild(face); el.appendChild(name);
+        stage.appendChild(el);
+      });
+    }
+
+    function switchRoom(room) {
+      currentRoom = room;
+      stage.className = room;
+      roomTitle.textContent = ROOMS[room].toUpperCase();
+      document.getElementById("btn-living").classList.toggle("active", room === "living");
+      document.getElementById("btn-garden").classList.toggle("active", room === "garden");
+      renderLog();
+      renderStage();
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(room + "|" + sanitize(nickInput.value.trim() || "Cat") + "|__join__");
+      }
+    }
+
+    function handleChat(id, room, nick, text) {
+      if (!ROOMS[room]) return;
+      // a cat can only be in one room at a time
+      Object.keys(cats).forEach(function (r) { if (r !== room) delete cats[r][id]; });
+      const face = FACES[parseInt(id, 10) % FACES.length] || "🐱";
+      const cat = cats[room][id] || (cats[room][id] = { face: face });
+      cat.nick = nick;
+
+      if (text === "__join__") {
+        addLog(room, "[" + ROOMS[room] + "] " + nick + " padded in.", "system");
+      } else {
+        cat.bubble = text;
+        clearTimeout(cat.timer);
+        cat.timer = setTimeout(function () { cat.bubble = ""; renderStage(); }, 5000);
+        addLog(room, "[" + ROOMS[room] + "] " + nick + ": " + text, "received");
+      }
+      renderStage();
+    }
+
+    socket.onopen = function () {
+      statusDiv.textContent = "Status: Connected to " + wsUrl;
+      statusDiv.className = "ok";
+      nickInput.disabled = false; msgInput.disabled = false; sendBtn.disabled = false;
+      addLog(currentRoom, "[System] Handshake complete. WebSocket ready.", "system");
+      socket.send(currentRoom + "|" + sanitize(nickInput.value.trim() || "Cat") + "|__join__");
+    };
+
+    socket.onmessage = function (event) {
+      const m = /^User (\S+) says: ([^|]*)\|([^|]*)\|(.*)$/.exec(event.data);
+      if (m) {
+        handleChat(m[1], m[2], m[3], m[4]);
+      } else {
+        addLog(currentRoom, "[Server] " + event.data, "system");   // e.g. the welcome message
+      }
+    };
+
+    socket.onclose = function () {
+      statusDiv.textContent = "Status: Disconnected";
+      statusDiv.className = "bad";
+      nickInput.disabled = true; msgInput.disabled = true; sendBtn.disabled = true;
+      addLog(currentRoom, "[System] Connection closed by server.", "system");
+    };
+
+    socket.onerror = function () {
+      addLog(currentRoom, "[Error] WebSocket error occurred.", "system");
+    };
+
+    function sendMessage() {
+      const text = sanitize(msgInput.value.trim());
+      const nick = sanitize(nickInput.value.trim() || "Cat");
+      if (text.length > 0 && socket.readyState === WebSocket.OPEN) {
+        socket.send(currentRoom + "|" + nick + "|" + text);   // server broadcasts it back to everyone
+        msgInput.value = "";
+      }
+    }
+
+    sendBtn.addEventListener("click", sendMessage);
+    msgInput.addEventListener("keypress", function (e) { if (e.key === "Enter") sendMessage(); });
+    document.getElementById("btn-living").addEventListener("click", function () { switchRoom("living"); });
+    document.getElementById("btn-garden").addEventListener("click", function () { switchRoom("garden"); });
+    renderStage();
+  </script>
+</body>
+</html>
